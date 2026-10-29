@@ -1,0 +1,2 @@
+import type {RequestHandler} from "express";import {fail} from "../utils/api-response";
+export const requireSelfOrAdmin:RequestHandler=(req,res,next)=>{const targetId=req.params.userId;const isAdmin=req.authUser?.app_metadata?.role==="admin";if(!req.authUser||(req.authUser.id!==targetId&&!isAdmin))return fail(res,403,"FORBIDDEN","You do not have permission to perform this action.");return next()};

@@ -1,0 +1,24 @@
+import { Router } from "express";
+import * as c from "../controllers/users.controller";
+import { authenticate } from "../middleware/authenticate";
+import { optionalAuth } from "../middleware/optional-auth";
+import { validateBody } from "../middleware/validate";
+import { profileSchema } from "../validators/profile.schemas";
+import { z } from "zod";
+
+const r = Router();
+r.get("/me/follow-requests", authenticate, c.followRequests);
+r.post("/me/follow-requests/:id/approve", authenticate, c.approveFollowRequest);
+r.post("/me/follow-requests/:id/reject", authenticate, c.rejectFollowRequest);
+r.get("/me/preferences", authenticate, c.preferences);
+r.patch("/me/preferences", authenticate, validateBody(z.object({ isPrivate: z.boolean().optional(), messagePrivacy: z.enum(["everyone", "followers", "nobody"]).optional() })), c.updatePreferences);
+r.get("/me/blocks", authenticate, c.blockList);
+r.post("/:username/block", authenticate, c.block);
+r.delete("/:username/block", authenticate, c.unblock);
+r.get("/:username/follow-status", optionalAuth, c.followStatus);
+r.put("/:username/follow", authenticate, c.follow);
+r.delete("/:username/follow", authenticate, c.unfollow);
+r.get("/:username/posts", optionalAuth, c.profilePosts);
+r.get("/:username", optionalAuth, c.profile);
+r.patch("/me/profile", authenticate, validateBody(profileSchema), c.update);
+export default r;

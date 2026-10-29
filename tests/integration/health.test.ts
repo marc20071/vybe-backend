@@ -1,0 +1,2 @@
+import {describe,it,expect} from "vitest";import {createApp} from "../../src/app";
+describe("health endpoint",()=>{it("returns API status",async()=>{const app=createApp();const server=app.listen(0);try{const address=server.address();if(!address||typeof address==="string")throw new Error("No address");const response=await fetch(`http://127.0.0.1:${address.port}/api/health`);expect(response.status).toBe(200);expect((await response.json()).status).toBe("ok")}finally{server.close()}})});

@@ -1,0 +1,2 @@
+import type {Request,Response,NextFunction} from "express";import {upload} from "../services/uploads.service";
+export async function create(req:Request,res:Response,next:NextFunction){try{const file=(req as Request & {file?:Express.Multer.File}).file;if(!file)return res.status(400).json({message:"Choose an image or video file."});const result=await upload(req,file);return res.status(201).json(result)}catch(e){next(e)}}

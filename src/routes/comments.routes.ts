@@ -1,0 +1,2 @@
+import {Router} from "express";import * as c from "../controllers/comments.controller";import {authenticate} from "../middleware/authenticate";import {optionalAuth} from "../middleware/optional-auth";import {validateBody} from "../middleware/validate";import {commentSchema} from "../validators/comment.schemas";
+const r=Router();r.get("/posts/:id/comments",optionalAuth,c.list);r.post("/posts/:id/comments",authenticate,validateBody(commentSchema),c.create);export default r;

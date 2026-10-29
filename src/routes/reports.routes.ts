@@ -1,0 +1,2 @@
+import {Router} from "express";import {z} from "zod";import * as c from "../controllers/reports.controller";import {authenticate} from "../middleware/authenticate";import {validateBody} from "../middleware/validate";
+const r=Router();r.post("/",authenticate,validateBody(z.object({targetType:z.enum(["post","comment","user","message"]),targetId:z.uuid(),reason:z.string().min(3).max(100),details:z.string().max(2000).optional()})),c.create);export default r;

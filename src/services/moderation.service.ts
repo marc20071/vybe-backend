@@ -1,0 +1,3 @@
+import type {Express} from "express";import {db,requireUser,throwDb} from "./shared";import {AppError} from "../utils/app-error";
+export async function report(req:Express.Request,input:{targetType:string;targetId:string;reason:string;details?:string}){const u=requireUser(req);const {data,error}=await db(req).from("reports").insert({reporter_id:u.id,target_type:input.targetType,target_id:input.targetId,reason:input.reason,details:input.details||""}).select("id,status,created_at").single();if(error)throwDb(error);return data}
+export async function removeReport(_req:Express.Request,_id:string){throw new AppError(501,"NOT_IMPLEMENTED","Moderation review actions are not enabled yet.")}
