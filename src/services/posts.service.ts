@@ -4,12 +4,10 @@ import { db, requireUser, throwDb, profileMap } from "./shared";
 import { getAdminSupabase } from "../config/database";
 import { MEDIA_BUCKET } from "../config/storage";
 import { AppError } from "../utils/app-error";
+import { assertUsersNotBlocked } from "./blocks.service";
 
 const PAGE_SIZE = 20;
 
-/**
- * Read the cursor without relying on Express Request query/originalUrl typings.
- */
 function getCursor(req: Express.Request): string {
   const requestWithQuery = req as unknown as {
     query?: {
@@ -43,11 +41,10 @@ async function removeBlockedAuthors(
   const blocked = new Set<string>();
 
   for (const item of data || []) {
-    blocked.add(String((item as any).blocker_id));
-    blocked.add(String((item as any).blocked_id));
+    blocked.add(String(item.blocker_id));
+    blocked.add(String(item.blocked_id));
   }
 
-  // Keep the current user's own posts, and remove posts from blocked users.
   return rows.filter(
     (row: any) =>
       String(row.user_id) === req.authUser!.id ||
@@ -62,7 +59,6 @@ async function signedMediaUrl(
     return "";
   }
 
-  // Already a complete URL; do not try to sign it again.
   if (/^https?:\/\//i.test(value)) {
     return value;
   }
@@ -87,13 +83,18 @@ async function mapPost(
   const client = db(req);
   const user = req.authUser;
   const profile = profiles.get(row.user_id) || {};
+  const admin = getAdminSupabase();
 
   const [
     mediaUrl,
-    { count: likeCount },
-    { count: commentCount },
+    likesResult,
+    commentsResult,
     liked,
     saved,
+    viewsResult,
+    repostsResult,
+    viewed,
+    reposted,
   ] = await Promise.all([
     signedMediaUrl(row.media_url),
 
@@ -116,7 +117,7 @@ async function mapPost(
           .eq("user_id", user.id)
           .eq("kind", "like")
           .maybeSingle()
-      : Promise.resolve({ data: null }),
+      : Promise.resolve({ data: null, error: null }),
 
     user
       ? client
@@ -126,8 +127,45 @@ async function mapPost(
           .eq("user_id", user.id)
           .eq("kind", "save")
           .maybeSingle()
-      : Promise.resolve({ data: null }),
+      : Promise.resolve({ data: null, error: null }),
+
+    admin
+      .from("post_views")
+      .select("post_id", { count: "exact", head: true })
+      .eq("post_id", row.id),
+
+    admin
+      .from("post_reposts")
+      .select("post_id", { count: "exact", head: true })
+      .eq("post_id", row.id),
+
+    user
+      ? client
+          .from("post_views")
+          .select("post_id")
+          .eq("post_id", row.id)
+          .eq("viewer_id", user.id)
+          .maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+
+    user
+      ? client
+          .from("post_reposts")
+          .select("post_id")
+          .eq("post_id", row.id)
+          .eq("user_id", user.id)
+          .maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
   ]);
+
+  if (likesResult.error) throwDb(likesResult.error);
+  if (commentsResult.error) throwDb(commentsResult.error);
+  if (liked.error) throwDb(liked.error);
+  if (saved.error) throwDb(saved.error);
+  if (viewsResult.error) throwDb(viewsResult.error);
+  if (repostsResult.error) throwDb(repostsResult.error);
+  if (viewed.error) throwDb(viewed.error);
+  if (reposted.error) throwDb(reposted.error);
 
   return {
     id: row.id,
@@ -147,10 +185,16 @@ async function mapPost(
     mediaType: row.media_type || "image",
     visibility: row.visibility,
     createdAt: row.created_at,
-    likeCount: likeCount || 0,
-    commentCount: commentCount || 0,
+
+    likeCount: likesResult.count || 0,
+    commentCount: commentsResult.count || 0,
+    viewCount: viewsResult.count || 0,
+    repostCount: repostsResult.count || 0,
+
     viewerHasLiked: Boolean(liked.data),
     viewerHasSaved: Boolean(saved.data),
+    viewerHasViewed: Boolean(viewed.data),
+    viewerHasReposted: Boolean(reposted.data),
   };
 }
 
@@ -428,5 +472,155 @@ export async function listSavedPosts(req: Express.Request) {
         mapPost(req, row, profiles),
       ),
     ),
+  };
+}
+
+/**
+ * Record one unique view per authenticated viewer per post.
+ * Repeated visits by the same account do not increase the count.
+ */
+export async function recordPostView(
+  req: Express.Request,
+  postId: string,
+) {
+  const user = requireUser(req);
+  const client = db(req);
+  const admin = getAdminSupabase();
+
+  const { data: post, error: postError } = await client
+    .from("posts")
+    .select("id,user_id,visibility")
+    .eq("id", postId)
+    .maybeSingle();
+
+  if (postError) throwDb(postError);
+
+  if (!post || post.visibility !== "public") {
+    throw new AppError(404, "POST_NOT_FOUND", "Post not found.");
+  }
+
+  if (String(post.user_id) === user.id) {
+    const { count, error } = await admin
+      .from("post_views")
+      .select("post_id", { count: "exact", head: true })
+      .eq("post_id", postId);
+
+    if (error) throwDb(error);
+
+    return { viewed: false, viewCount: count ?? 0 };
+  }
+
+  await assertUsersNotBlocked(user.id, String(post.user_id));
+
+  const { error: insertError } = await client
+    .from("post_views")
+    .upsert(
+      {
+        post_id: postId,
+        viewer_id: user.id,
+      },
+      {
+        onConflict: "post_id,viewer_id",
+        ignoreDuplicates: true,
+      },
+    );
+
+  if (insertError) throwDb(insertError);
+
+  const { count, error: countError } = await admin
+    .from("post_views")
+    .select("post_id", { count: "exact", head: true })
+    .eq("post_id", postId);
+
+  if (countError) throwDb(countError);
+
+  return {
+    viewed: true,
+    viewCount: count ?? 0,
+  };
+}
+
+/**
+ * Create or remove the current user's repost.
+ */
+export async function setRepost(
+  req: Express.Request,
+  postId: string,
+  active: boolean,
+) {
+  const user = requireUser(req);
+  const client = db(req);
+  const admin = getAdminSupabase();
+
+  const { data: post, error: postError } = await client
+    .from("posts")
+    .select("id,user_id,visibility")
+    .eq("id", postId)
+    .maybeSingle();
+
+  if (postError) throwDb(postError);
+
+  if (!post || post.visibility !== "public") {
+    throw new AppError(404, "POST_NOT_FOUND", "Post not found.");
+  }
+
+  if (String(post.user_id) === user.id) {
+    throw new AppError(
+      400,
+      "CANNOT_REPOST_OWN_POST",
+      "You cannot repost your own post.",
+    );
+  }
+
+  await assertUsersNotBlocked(user.id, String(post.user_id));
+
+  if (active) {
+    const { error } = await client
+      .from("post_reposts")
+      .upsert(
+        {
+          post_id: postId,
+          user_id: user.id,
+        },
+        {
+          onConflict: "post_id,user_id",
+          ignoreDuplicates: true,
+        },
+      );
+
+    if (error) throwDb(error);
+  } else {
+    const { error } = await client
+      .from("post_reposts")
+      .delete()
+      .eq("post_id", postId)
+      .eq("user_id", user.id);
+
+    if (error) throwDb(error);
+  }
+
+  const [
+    { count, error: countError },
+    { data: ownRepost, error: ownError },
+  ] = await Promise.all([
+    admin
+      .from("post_reposts")
+      .select("post_id", { count: "exact", head: true })
+      .eq("post_id", postId),
+
+    client
+      .from("post_reposts")
+      .select("post_id")
+      .eq("post_id", postId)
+      .eq("user_id", user.id)
+      .maybeSingle(),
+  ]);
+
+  if (countError) throwDb(countError);
+  if (ownError) throwDb(ownError);
+
+  return {
+    reposted: Boolean(ownRepost),
+    repostCount: count ?? 0,
   };
 }
